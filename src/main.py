@@ -3,6 +3,10 @@ import random
 import socket
 import threading
 import requests
+from flask import Flask, render_template_string
+
+
+app = Flask(__name__)
 
 def round_robin_load_balancer(request_count, servers):
     return servers[request_count % len(servers)]
@@ -43,7 +47,7 @@ def load_balancer(request_count, client_ip, connections_count, servers, algorith
     server_address, server_port = selected_server
     if server_address.startswith("http://") or server_address.startswith("https://"):
         response = requests.get(server_address)
-        print(f"Request {request_count[0] + 1} directed to {selected_server} with response: {response.text}")
+        return response.text
     else:
         with lock:
             connections_count[selected_server] += 1
@@ -67,7 +71,10 @@ def handle_client(client_socket, request_count, connections_count, servers, algo
     client_address = client_socket.getpeername()
     print(f"Accepted connection from {client_address}")
 
-    selected_server = load_balancer(request_count, client_address[0], connections_count, servers, algorithm, lock)
+    response_content = load_balancer(request_count, client_address[0], connections_count, servers, algorithm, lock)
+
+    # Send the response to the client's browser
+    client_socket.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n" + response_content.encode())
 
     client_socket.close()
 
@@ -76,22 +83,18 @@ def start_load_balancer(listen_port, backend_servers, algorithm='round-robin'):
     connections_count = {server: 0 for server in backend_servers}
     lock = threading.Lock()
 
-    def listen_for_clients():
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as lb_socket:
-            lb_socket.bind(('0.0.0.0', listen_port))
-            lb_socket.listen()
+    @app.route("/")
+    def index():
+        selected_server = load_balancer(request_count, "127.0.0.1", connections_count, backend_servers, algorithm, lock)
+        return render_template_string("<html><body>Response from: {{ server }}</body></html>", server=selected_server)
 
-            print(f"Load Balancer listening on port {listen_port} with {algorithm} algorithm")
+    threading.Thread(target=app.run, kwargs={"port": listen_port}, daemon=True).start()
 
-            while True:
-                client_socket, _ = lb_socket.accept()
-                threading.Thread(target=handle_client, args=(client_socket, request_count, connections_count, backend_servers, algorithm, lock), daemon=True).start()
-
-    threading.Thread(target=listen_for_clients, daemon=True).start()
+    print(f"Load Balancer serving on http://127.0.0.1:{listen_port}")
 
 if __name__ == "__main__":
     # Replace the backend server information with your actual backend servers
-    backend_servers = [("http://google.com", 80), ("http://google.com", 80), ("http://google.com", 80)]
+    backend_servers = [("http://example.com", 80), ("http://example.com", 80), ("http://example.com", 80)]
     
     algorithm = input("Select load balancing algorithm (round-robin, least-connections, weighted-round-robin, ip-hash, random): ")
     start_load_balancer(8080, backend_servers, algorithm)
